@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Collections.Immutable;
@@ -8,7 +8,7 @@ using ChessChallenge.API;
 
 using static System.Math;
 
-public partial class MyBot : IChessBot
+public class MyBot2 : IChessBot
 {
     int _movesEvaled, _movesPruned, _cacheUsed = 0;
     int _timeMs = 200 * 1;
@@ -88,8 +88,8 @@ public partial class MyBot : IChessBot
             }
 
             _movesEvaled++;
-            var val = Quiesce(board, int.MinValue, int.MaxValue);
-            //var val = EvalBoard(board, _botIsWhite);
+            //var val = Quiesce(board, int.MinValue, int.MaxValue);
+            var val = EvalBoard(board, _botIsWhite);
             _transpositionTable[board.ZobristKey] = val;
             return val;
         }
