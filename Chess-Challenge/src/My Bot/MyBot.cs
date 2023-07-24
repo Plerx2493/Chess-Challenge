@@ -10,29 +10,29 @@ using static System.Math;
 
 public class MyBot : IChessBot
 {
-    int movesEvaled, movesPruned, cacheUsed = 0;
-    bool botIsWhite;
-    int[] moveScores = new int[maxMoveCount];
-    const int maxMoveCount = 218;
+    int _movesEvaled, _movesPruned, _cacheUsed = 0;
+    bool _botIsWhite;
+    int[] _moveScores = new int[MaxMoveCount];
+    const int MaxMoveCount = 218;
     
-    static ConcurrentDictionary<ulong, int> transpositionTable = new();
-    readonly int depth = 6;
-    readonly int squareControlledByOpponentPawnPenalty = 350;
-    readonly int capturedPieceValueMultiplier = 10;
-    readonly int[] pieceValues = new [] { 0, 100, 300, 320, 500, 900, 10000};
+    static ConcurrentDictionary<ulong, int> _transpositionTable = new();
+    readonly int _depth = 6;
+    readonly int _squareControlledByOpponentPawnPenalty = 350;
+    readonly int _capturedPieceValueMultiplier = 10;
+    readonly int[] _pieceValues = new [] { 0, 100, 300, 320, 500, 900, 10000};
  
     public Move Think(Board board, Timer timer)
     {
-        Console.WriteLine("Thinking... (Cache size: " + transpositionTable.Count + ")");
-        movesEvaled = 0;
-        movesPruned = 0;
-        cacheUsed = 0;
-        botIsWhite = board.IsWhiteToMove;
+        Console.WriteLine("Thinking... (Cache size: " + _transpositionTable.Count + ")");
+        _movesEvaled = 0;
+        _movesPruned = 0;
+        _cacheUsed = 0;
+        _botIsWhite = board.IsWhiteToMove;
         var eval = EvalMoves(board);
 
-        Console.WriteLine($"{movesEvaled} Evaled and {movesPruned} pruned");
+        Console.WriteLine($"{_movesEvaled} Evaled and {_movesPruned} pruned");
         Console.WriteLine($"Score: {eval.Item2}");
-        Console.WriteLine($"Cache used: {cacheUsed}");
+        Console.WriteLine($"Cache used: {_cacheUsed}");
         return eval.Item1;
     }
 
@@ -41,12 +41,12 @@ public class MyBot : IChessBot
         int bestScore = int.MinValue;
         Move bestMove = Move.NullMove;
         
-        System.Span<Move> moves = stackalloc Move[maxMoveCount];
+        System.Span<Move> moves = stackalloc Move[MaxMoveCount];
         board.GetLegalMovesNonAlloc(ref moves);
         OrderMoves(board, ref moves);
         foreach (var move in moves)
         {
-            int currentdepth = depth;
+            int currentdepth = _depth;
             if (board.PlyCount < 20) currentdepth = 4;
             board.MakeMove(move);
             int eval = MiniMax(currentdepth, board, int.MinValue, int.MaxValue, true);
@@ -66,19 +66,19 @@ public class MyBot : IChessBot
     {
         if (depth < 1)
         {
-            if (transpositionTable.TryGetValue(board.ZobristKey, out var cache))
+            if (_transpositionTable.TryGetValue(board.ZobristKey, out var cache))
             {
-                cacheUsed++;
+                _cacheUsed++;
                 return cache;
             }
 
-            movesEvaled++;
+            _movesEvaled++;
             var val = EvalBoard(board, board.IsWhiteToMove);
-            transpositionTable[board.ZobristKey] = val;
+            _transpositionTable[board.ZobristKey] = val;
             return val;
         }
 
-        Span<Move> moves = stackalloc Move[maxMoveCount];
+        Span<Move> moves = stackalloc Move[MaxMoveCount];
         board.GetLegalMovesNonAlloc(ref moves);
         if (moves.Length < 1)
         {
@@ -107,7 +107,7 @@ public class MyBot : IChessBot
                 alpha = Max(alpha, bestValue);
                 if (beta <= alpha)
                 {
-                    movesPruned++;
+                    _movesPruned++;
                     break;
                 }
             }
@@ -125,7 +125,7 @@ public class MyBot : IChessBot
             beta = Min(alpha, bestValue);
             if (beta <= alpha)
             {
-                movesPruned++;
+                _movesPruned++;
                 break;
             }
         }
@@ -151,7 +151,7 @@ public class MyBot : IChessBot
         {
             if(pieceList.IsWhitePieceList != isWhite) continue;
             foreach (var pice in pieceList)
-                score += pieceValues[(int)pice.PieceType];
+                score += _pieceValues[(int)pice.PieceType];
         }
         
         return score;
@@ -168,9 +168,9 @@ public class MyBot : IChessBot
             PieceType flag = move.PromotionPieceType;
             
             if (capturePieceType != PieceType.None)
-                score = capturedPieceValueMultiplier * pieceValues[(int)capturePieceType] - pieceValues[(int)movePieceType];
+                score = _capturedPieceValueMultiplier * _pieceValues[(int)capturePieceType] - _pieceValues[(int)movePieceType];
 
-            if (movePieceType == PieceType.Pawn) score += pieceValues[(int)flag] - 100;
+            if (movePieceType == PieceType.Pawn) score += _pieceValues[(int)flag] - 100;
             
             board.MakeMove(move);
             if(board.IsInCheckmate()) score += 10000;
@@ -178,17 +178,17 @@ public class MyBot : IChessBot
             if (board.IsDraw()) score -= 1000;
             
             // reduce score if square is attacked by opponent
-            Span<Move> opponentMoves = stackalloc Move[maxMoveCount];
+            Span<Move> opponentMoves = stackalloc Move[MaxMoveCount];
             board.GetLegalMovesNonAlloc(ref opponentMoves);
             foreach (var newMoves in opponentMoves)
             {
                 if (newMoves.TargetSquare == move.TargetSquare)
-                    score -= squareControlledByOpponentPawnPenalty;
+                    score -= _squareControlledByOpponentPawnPenalty;
             }
 
             board.UndoMove(move);
 
-            moveScores[i] = score;
+            _moveScores[i] = score;
             i++;
         }
 
@@ -202,10 +202,10 @@ public class MyBot : IChessBot
             for (int j = i + 1; j > 0; j--)
             {
                 int swapIndex = j - 1;
-                if (moveScores[swapIndex] < moveScores[j])
+                if (_moveScores[swapIndex] < _moveScores[j])
                 {
                     (moves[j], moves[swapIndex]) = (moves[swapIndex], moves[j]);
-                    (moveScores[j], moveScores[swapIndex]) = (moveScores[swapIndex], moveScores[j]);
+                    (_moveScores[j], _moveScores[swapIndex]) = (_moveScores[swapIndex], _moveScores[j]);
                 }
             }
     }
