@@ -6,20 +6,21 @@ using System.ComponentModel.DataAnnotations;
 using System.Linq;
 using ChessChallenge.API;
 
+using static System.Math;
+
 public class MyBot : IChessBot
 {
-    private int movesEvaled = 0;
-    private int movesPruned = 0;
-    private int cacheUsed = 0;
-    private bool botIsWhite;
-    int[] moveScores = new int[220];
+    int movesEvaled, movesPruned, cacheUsed = 0;
+    bool botIsWhite;
+    int[] moveScores = new int[maxMoveCount];
     const int maxMoveCount = 218;
-    int depth = 7;
-    public static ConcurrentDictionary<ulong, int> transpositionTable = new ConcurrentDictionary<ulong, int>();
-
-    const int squareControlledByOpponentPawnPenalty = 350;
-    const int capturedPieceValueMultiplier = 10;
-
+    
+    static ConcurrentDictionary<ulong, int> transpositionTable = new();
+    readonly int depth = 6;
+    readonly int squareControlledByOpponentPawnPenalty = 350;
+    readonly int capturedPieceValueMultiplier = 10;
+    readonly int[] pieceValues = new [] { 0, 100, 300, 320, 500, 900, 10000};
+ 
     public Move Think(Board board, Timer timer)
     {
         Console.WriteLine("Thinking... (Cache size: " + transpositionTable.Count + ")");
@@ -39,14 +40,14 @@ public class MyBot : IChessBot
     {
         int bestScore = int.MinValue;
         Move bestMove = Move.NullMove;
-
-        Move[] moves = board.GetLegalMoves();
-        OrderMoves(board, moves);
+        
+        System.Span<Move> moves = stackalloc Move[maxMoveCount];
+        board.GetLegalMovesNonAlloc(ref moves);
+        OrderMoves(board, ref moves);
         foreach (var move in moves)
         {
             int currentdepth = depth;
-            if (board.PlyCount < 20)
-                currentdepth = 4;
+            if (board.PlyCount < 20) currentdepth = 4;
             board.MakeMove(move);
             int eval = MiniMax(currentdepth, board, int.MinValue, int.MaxValue, true);
             board.UndoMove(move);
@@ -77,7 +78,8 @@ public class MyBot : IChessBot
             return val;
         }
 
-        var moves = board.GetLegalMoves();
+        Span<Move> moves = stackalloc Move[maxMoveCount];
+        board.GetLegalMovesNonAlloc(ref moves);
         if (moves.Length < 1)
         {
             if (board.IsInCheck())
@@ -91,7 +93,7 @@ public class MyBot : IChessBot
             }
         }
 
-        OrderMoves(board, moves);
+        OrderMoves(board, ref moves);
         int bestValue;
         if (isMax)
         {
@@ -101,8 +103,8 @@ public class MyBot : IChessBot
                 board.MakeMove(newMove);
                 int eval = MiniMax(depth - 1, board, beta, alpha, !isMax);
                 board.UndoMove(newMove);
-                bestValue = Math.Max(eval, bestValue);
-                alpha = Math.Max(alpha, bestValue);
+                bestValue = Max(eval, bestValue);
+                alpha = Max(alpha, bestValue);
                 if (beta <= alpha)
                 {
                     movesPruned++;
@@ -119,8 +121,8 @@ public class MyBot : IChessBot
             board.MakeMove(newMove);
             int eval = MiniMax(depth - 1, board, beta, alpha, !isMax);
             board.UndoMove(newMove);
-            bestValue = Math.Min(eval, bestValue);
-            beta = Math.Min(alpha, bestValue);
+            bestValue = Min(eval, bestValue);
+            beta = Min(alpha, bestValue);
             if (beta <= alpha)
             {
                 movesPruned++;
@@ -134,6 +136,9 @@ public class MyBot : IChessBot
     int EvalBoard(Board board, bool isWhite)
     {
         int score = 0;
+        if(board.IsInCheckmate()) return Int32.MinValue;
+        if(board.IsDraw()) return 0;
+        if(board.IsInCheck()) score -= 500;
         score += EvalBoardOneSide(board, isWhite);
         score -= EvalBoardOneSide(board, !isWhite);
         return score;
@@ -142,117 +147,58 @@ public class MyBot : IChessBot
     int EvalBoardOneSide(Board board, bool isWhite)
     {
         int score = 0;
-        foreach (var piece in board.GetPieceList(PieceType.Pawn, isWhite))
+        foreach (var pieceList in board.GetAllPieceLists())
         {
-            score += 100;
+            if(pieceList.IsWhitePieceList != isWhite) continue;
+            foreach (var pice in pieceList)
+                score += pieceValues[(int)pice.PieceType];
         }
-
-        foreach (var piece in board.GetPieceList(PieceType.Knight, isWhite))
-        {
-            score += 300;
-        }
-
-        foreach (var piece in board.GetPieceList(PieceType.Bishop, isWhite))
-        {
-            score += 300;
-        }
-
-        foreach (var piece in board.GetPieceList(PieceType.Rook, isWhite))
-        {
-            score += 500;
-        }
-
-        foreach (var piece in board.GetPieceList(PieceType.Queen, isWhite))
-        {
-            score += 900;
-        }
-
-        foreach (var piece in board.GetPieceList(PieceType.King, isWhite))
-        {
-            score += 10000;
-        }
-
+        
         return score;
     }
 
-    public void OrderMoves(Board board, Move[] moves)
+    public void OrderMoves(Board board, ref Span<Move> moves)
     {
-        for (int i = 0; i < moves.Length; i++)
+        int i = 0;
+        foreach (var move in moves)
         {
             int score = 0;
-            PieceType movePieceType = board.GetPiece(moves[i].StartSquare).PieceType;
-            PieceType capturePieceType = board.GetPiece(moves[i].TargetSquare).PieceType;
-            PieceType flag = moves[i].PromotionPieceType;
-
+            PieceType movePieceType = move.MovePieceType;
+            PieceType capturePieceType = move.CapturePieceType;
+            PieceType flag = move.PromotionPieceType;
+            
             if (capturePieceType != PieceType.None)
-            {
-                // Order moves to try capturing the most valuable opponent piece with least valuable of own pieces first
-                // The capturedPieceValueMultiplier is used to make even 'bad' captures like QxP rank above non-captures
-                score = capturedPieceValueMultiplier * GetPieceValue(capturePieceType) - GetPieceValue(movePieceType);
-            }
+                score = capturedPieceValueMultiplier * pieceValues[(int)capturePieceType] - pieceValues[(int)movePieceType];
 
-            if (movePieceType == PieceType.Pawn)
-            {
-                if (flag == PieceType.Queen)
-                {
-                    score += 900;
-                }
-                else if (flag == PieceType.Knight)
-                {
-                    score += 300;
-                }
-                else if (flag == PieceType.Rook)
-                {
-                    score += 500;
-                }
-                else if (flag == PieceType.Bishop)
-                {
-                    score += 320;
-                }
-            }
-
-            board.MakeMove(moves[i]);
+            if (movePieceType == PieceType.Pawn) score += pieceValues[(int)flag] - 100;
+            
+            board.MakeMove(move);
+            if(board.IsInCheckmate()) score += 10000;
+            if(board.IsInCheck()) score += 500;
+            if (board.IsDraw()) score -= 1000;
+            
             // reduce score if square is attacked by opponent
-            foreach (var newMoves in board.GetLegalMoves(true))
+            Span<Move> opponentMoves = stackalloc Move[maxMoveCount];
+            board.GetLegalMovesNonAlloc(ref opponentMoves);
+            foreach (var newMoves in opponentMoves)
             {
-                if (newMoves.TargetSquare == moves[i].TargetSquare)
-                {
+                if (newMoves.TargetSquare == move.TargetSquare)
                     score -= squareControlledByOpponentPawnPenalty;
-                }
             }
 
-            board.UndoMove(moves[i]);
+            board.UndoMove(move);
 
             moveScores[i] = score;
+            i++;
         }
 
-        Sort(moves);
+        Sort(ref moves);
     }
-
-    static int GetPieceValue(PieceType pieceType)
-    {
-        switch (pieceType)
-        {
-            case PieceType.Queen:
-                return 900;
-            case PieceType.Rook:
-                return 500;
-            case PieceType.Knight:
-                return 300;
-            case PieceType.Bishop:
-                return 320;
-            case PieceType.Pawn:
-                return 100;
-            default:
-                return 0;
-        }
-    }
-
-    void Sort(Move[] moves)
+    
+    void Sort(ref Span<Move> moves)
     {
         // Sort the moves list based on scores
         for (int i = 0; i < moves.Length - 1; i++)
-        {
             for (int j = i + 1; j > 0; j--)
             {
                 int swapIndex = j - 1;
@@ -262,6 +208,5 @@ public class MyBot : IChessBot
                     (moveScores[j], moveScores[swapIndex]) = (moveScores[swapIndex], moveScores[j]);
                 }
             }
-        }
     }
 }
