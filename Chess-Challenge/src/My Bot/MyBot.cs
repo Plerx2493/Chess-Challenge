@@ -21,7 +21,12 @@ public partial class MyBot : IChessBot
     readonly int _squareControlledByOpponentPawnPenalty = 350;
     readonly int _capturedPieceValueMultiplier = 10;
     readonly int[] _pieceValues = new [] { 0, 100, 300, 320, 500, 900, 10000};
+    
+    
+    
     Move lastMove = Move.NullMove;
+    
+    (Move, int) _bestLastEval = (Move.NullMove, int.MinValue);
  
     public Move Think(Board board, Timer timer)
     {
@@ -31,6 +36,8 @@ public partial class MyBot : IChessBot
         _cacheUsed = 0;
         _botIsWhite = board.IsWhiteToMove;
         int depthReached = 0;
+
+        _timeMs = GetTime(board, timer);
         
         bool isAborted = false;
         (Move, int) bestEval = (Move.NullMove, int.MinValue);
@@ -38,8 +45,9 @@ public partial class MyBot : IChessBot
         {
             if (timer.MillisecondsElapsedThisTurn > _timeMs) break;
             var evalIt = EvalMoves(board, i + 1, timer);
-            if (evalIt.Item2 > bestEval.Item2)
+            if (evalIt.Item2 > bestEval.Item2 && evalIt.Item2 != int.MaxValue && evalIt.Item2 != int.MinValue)
                 bestEval = evalIt;
+            _bestLastEval = bestEval;
             depthReached++;
         }
 
@@ -88,7 +96,7 @@ public partial class MyBot : IChessBot
             }
 
             _movesEvaled++;
-            var val = Quiesce(board, int.MinValue, int.MaxValue);
+            var val = Quiesce(board, -999999, 999999);
             //var val = EvalBoard(board, _botIsWhite);
             _transpositionTable[board.ZobristKey] = val;
             return val;
@@ -109,7 +117,7 @@ public partial class MyBot : IChessBot
         }
 
         OrderMoves(board, ref moves);
-        int bestValue;
+        int bestValue = 0;
         if (isMax)
         {
             bestValue = int.MinValue;
@@ -117,9 +125,8 @@ public partial class MyBot : IChessBot
             {
                 if (timer.MillisecondsElapsedThisTurn > _timeMs) break;
                 board.MakeMove(newMove);
-                int eval = MiniMax(depth - 1, board, beta, alpha, !isMax, timer);
+                bestValue = MiniMax(depth - 1, board, alpha, beta, !isMax, timer);
                 board.UndoMove(newMove);
-                bestValue = Max(eval, bestValue);
                 alpha = Max(alpha, bestValue);
                 if (beta <= alpha)
                 {
@@ -130,16 +137,15 @@ public partial class MyBot : IChessBot
 
             return bestValue;
         }
-
+        
         bestValue = int.MaxValue;
         foreach (var newMove in moves)
         {
             if (timer.MillisecondsElapsedThisTurn > _timeMs) break;
             board.MakeMove(newMove);
-            int eval = MiniMax(depth - 1, board, beta, alpha, !isMax, timer);
+            bestValue = MiniMax(depth - 1, board, alpha, beta, !isMax, timer);
             board.UndoMove(newMove);
-            bestValue = Min(eval, bestValue);
-            beta = Min(alpha, bestValue);
+            beta = Min(beta, bestValue);
             if (beta <= alpha)
             {
                 _movesPruned++;
@@ -153,14 +159,15 @@ public partial class MyBot : IChessBot
     int EvalBoard(Board board, bool isWhite)
     {
         int score = 0;
-        if(board.IsInCheckmate())
+        if (board.IsInCheckmate() || board.IsInsufficientMaterial())
+        {
             if(isWhite == _botIsWhite) 
-                return int.MinValue;
+                return -999999;
             else
-                return int.MaxValue;
+                return 999999;
+        }
         
-        if(board.IsDraw()) return 0;
-        if(board.IsInCheck()) score -= 100;
+        if(board.IsRepeatedPosition()) score -= 100;
         score += EvalBoardOneSide(board, isWhite);
         score -= EvalBoardOneSide(board, !isWhite);
         return score;
@@ -172,15 +179,33 @@ public partial class MyBot : IChessBot
         
         foreach (var pieceList in board.GetAllPieceLists())
         {
-            if(pieceList.IsWhitePieceList != isWhite) continue;
+            if (pieceList.IsWhitePieceList != isWhite) continue;
             foreach (var piece in pieceList)
             {
                 score += _pieceValues[(int)piece.PieceType];
-                if (piece.PieceType == PieceType.Knight)
-                {
-                    if (piece.Square.Rank < 6 && piece.Square.Rank > 3 && piece.Square.File < 6 && piece.Square.File > 3)
-                        score += _pieceValues[(int)piece.PieceType] * 3;
-                }
+                if (board.SquareIsAttackedByOpponent(piece.Square))
+                    score -= _squareControlledByOpponentPawnPenalty;
+                if (piece.IsPawn)
+                    score += pawnScores[piece.Square.Rank, piece.Square.File];
+                
+                if (piece.IsBishop)
+                    score += bishopScores[piece.Square.Rank, piece.Square.File];
+                
+                if (piece.IsKnight)
+                    score += knightScores[piece.Square.Rank, piece.Square.File];
+                
+                if (piece.IsRook)
+                    score += rookScores[piece.Square.Rank, piece.Square.File];
+                
+                if (piece.IsQueen)
+                    score += queenScores[piece.Square.Rank, piece.Square.File];
+                
+                if (piece.IsKing)
+                    score += kingScores[piece.Square.Rank, piece.Square.File];
+                
+                if (piece.IsKing && board.IsInCheck())
+                    score -= 100;
+                    
             }
         }
         
@@ -196,12 +221,22 @@ public partial class MyBot : IChessBot
             PieceType movePieceType = move.MovePieceType;
             PieceType capturePieceType = move.CapturePieceType;
             PieceType flag = move.PromotionPieceType;
+
+            if (move.Equals(_bestLastEval.Item1))
+            {
+                score = int.MaxValue;
+                i++;
+                continue;
+            }
             
             if (movePieceType == PieceType.King) 
                 score -= 1000;
             
             //discourage moving the same piece twice in a row
             if (movePieceType == lastMove.MovePieceType && move.StartSquare == lastMove.TargetSquare)
+                score -= 1000;
+            
+            if (board.GameMoveHistory.Contains(move))
                 score -= 1000;
             
             if (capturePieceType != PieceType.None)
@@ -213,13 +248,16 @@ public partial class MyBot : IChessBot
             if (move.IsCastles) score += 500;
             
             board.MakeMove(move);
-            if(board.IsInCheckmate()) score -= 10000;
-            if(board.IsInCheck()) score -= 500;
-            if (board.IsDraw()) score -= 1000;
+            if (board.IsInCheckmate()) score += 10000;
+            if (board.IsInCheck()) score += 500;
+            if (board.IsRepeatedPosition()) score -= 1000;
+            if (board.IsInsufficientMaterial()) score += 1000;
             
             // reduce score if square is attacked by opponent
             Span<Move> opponentMoves = stackalloc Move[MaxMoveCount];
             board.GetLegalMovesNonAlloc(ref opponentMoves);
+            if (opponentMoves.Length < 1) score += 1000;
+            
             foreach (var newMoves in opponentMoves)
             {
                 if (newMoves.TargetSquare == move.TargetSquare)
@@ -247,5 +285,11 @@ public partial class MyBot : IChessBot
                     (_moveScores[j], _moveScores[swapIndex]) = (_moveScores[swapIndex], _moveScores[j]);
                 }
             }
+    }
+    
+    // Basic time management
+    public int GetTime(Board board, Timer timer)
+    {
+        return Min(board.PlyCount * 150 + 100, timer.MillisecondsRemaining / 20);
     }
 }

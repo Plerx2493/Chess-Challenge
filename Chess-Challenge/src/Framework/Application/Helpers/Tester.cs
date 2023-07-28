@@ -11,6 +11,8 @@ namespace ChessChallenge.Application
 
         static bool anyFailed;
 
+        public static void Main1() => Run(true);
+        
         public static void Run(bool runPerft)
         {
             anyFailed = false;
