@@ -17,8 +17,11 @@ public partial class MyBot : IChessBot
     const int MaxMoveCount = 218;
     
     ConcurrentDictionary<ulong, int> _transpositionTable = new();
+    bool useTT = true;
+    bool clearTT = true;
+    bool useQSearch = true;
     readonly int _depth = 6;
-    readonly int _squareControlledByOpponentPawnPenalty = 350;
+    readonly int _squareControlledByOpponentPawnPenalty = 500;
     readonly int _capturedPieceValueMultiplier = 10;
     readonly int[] _pieceValues = new [] { 0, 100, 300, 320, 500, 900, 10000};
     
@@ -30,7 +33,7 @@ public partial class MyBot : IChessBot
  
     public Move Think(Board board, Timer timer)
     {
-        Console.WriteLine("Thinking... (Cache size: " + _transpositionTable.Count + ")..................");
+        //Console.WriteLine("Thinking... (Cache size: " + _transpositionTable.Count + ")..................");
         _movesEvaled = 0;
         _movesPruned = 0;
         _cacheUsed = 0;
@@ -43,18 +46,19 @@ public partial class MyBot : IChessBot
         (Move, int) bestEval = (Move.NullMove, int.MinValue);
         for (int i = 0; i < 20; i++)
         {
-            if (timer.MillisecondsElapsedThisTurn > _timeMs) break;
+            if (clearTT) _transpositionTable.Clear();
             var evalIt = EvalMoves(board, i + 1, timer);
             if (evalIt.Item2 > bestEval.Item2 && evalIt.Item2 != int.MaxValue && evalIt.Item2 != int.MinValue)
                 bestEval = evalIt;
             _bestLastEval = bestEval;
             depthReached++;
+            if (timer.MillisecondsElapsedThisTurn > _timeMs) break;
         }
 
-        Console.WriteLine($"{_movesEvaled} Evaled and {_movesPruned} pruned");
+        //Console.WriteLine($"{_movesEvaled} Evaled and {_movesPruned} pruned");
         Console.WriteLine($"Score: {bestEval.Item2}");
-        Console.WriteLine($"Cache used: {_cacheUsed}");
-        Console.WriteLine($"depth reached: {depthReached}");
+        //Console.WriteLine($"Cache used: {_cacheUsed}");
+        //Console.WriteLine($"depth reached: {depthReached}");
         
         lastMove = bestEval.Item1;
         return bestEval.Item1;
@@ -70,7 +74,6 @@ public partial class MyBot : IChessBot
         OrderMoves(board, ref moves);
         foreach (var move in moves)
         {
-            if (timer.MillisecondsElapsedThisTurn > _timeMs) break;
             board.MakeMove(move);
             int eval = MiniMax(depth, board, int.MinValue, int.MaxValue, true, timer);
             board.UndoMove(move);
@@ -80,6 +83,7 @@ public partial class MyBot : IChessBot
                 bestScore = eval;
                 bestMove = move;
             }
+            if (timer.MillisecondsElapsedThisTurn > _timeMs) break;
         }
 
         return (bestMove, bestScore);
@@ -89,16 +93,19 @@ public partial class MyBot : IChessBot
     {
         if (depth < 1)
         {
-            if (_transpositionTable.TryGetValue(board.ZobristKey, out var cache))
+            if (useTT && _transpositionTable.TryGetValue(board.ZobristKey, out var cache))
             {
                 _cacheUsed++;
                 return cache;
             }
 
             _movesEvaled++;
-            var val = Quiesce(board, -999999, 999999);
-            //var val = EvalBoard(board, _botIsWhite);
-            _transpositionTable[board.ZobristKey] = val;
+            int val = 0;
+            if (useQSearch)
+                val = Quiesce(board, -999999, 999999);
+            else
+                val = EvalBoard(board, _botIsWhite);
+            if (useTT) _transpositionTable[board.ZobristKey] = val;
             return val;
         }
 
@@ -123,7 +130,6 @@ public partial class MyBot : IChessBot
             bestValue = int.MinValue;
             foreach (var newMove in moves)
             {
-                if (timer.MillisecondsElapsedThisTurn > _timeMs) break;
                 board.MakeMove(newMove);
                 bestValue = MiniMax(depth - 1, board, alpha, beta, !isMax, timer);
                 board.UndoMove(newMove);
@@ -133,6 +139,7 @@ public partial class MyBot : IChessBot
                     _movesPruned++;
                     break;
                 }
+                if (timer.MillisecondsElapsedThisTurn > _timeMs) break;
             }
 
             return bestValue;
@@ -141,7 +148,6 @@ public partial class MyBot : IChessBot
         bestValue = int.MaxValue;
         foreach (var newMove in moves)
         {
-            if (timer.MillisecondsElapsedThisTurn > _timeMs) break;
             board.MakeMove(newMove);
             bestValue = MiniMax(depth - 1, board, alpha, beta, !isMax, timer);
             board.UndoMove(newMove);
@@ -151,6 +157,7 @@ public partial class MyBot : IChessBot
                 _movesPruned++;
                 break;
             }
+            if (timer.MillisecondsElapsedThisTurn > _timeMs) break;
         }
 
         return bestValue;
@@ -159,15 +166,17 @@ public partial class MyBot : IChessBot
     int EvalBoard(Board board, bool isWhite)
     {
         int score = 0;
-        if (board.IsInCheckmate() || board.IsInsufficientMaterial())
+        if (board.IsInCheckmate() || board.IsInsufficientMaterial() )
         {
             if(isWhite == _botIsWhite) 
-                return -999999;
-            else
                 return 999999;
+            else
+                return -999999;
         }
+
+        if (board.FiftyMoveCounter >= 100) return 0;
         
-        if(board.IsRepeatedPosition()) score -= 100;
+        if(board.IsRepeatedPosition()) score -= 1000;
         score += EvalBoardOneSide(board, isWhite);
         score -= EvalBoardOneSide(board, !isWhite);
         return score;
@@ -183,28 +192,50 @@ public partial class MyBot : IChessBot
             foreach (var piece in pieceList)
             {
                 score += _pieceValues[(int)piece.PieceType];
+                
+                /*
                 if (board.SquareIsAttackedByOpponent(piece.Square))
-                    score -= _squareControlledByOpponentPawnPenalty;
+                    if (isWhite == _botIsWhite)
+                        score -= _squareControlledByOpponentPawnPenalty;
+                    else
+                        score += _squareControlledByOpponentPawnPenalty;
+                */
+                
                 if (piece.IsPawn)
-                    score += pawnScores[piece.Square.Rank, piece.Square.File];
+                    if (_botIsWhite == isWhite)
+                        score += pawnScores[piece.Square.Rank, piece.Square.File];
+                    else
+                        score += pawnScores[7 - piece.Square.Rank, piece.Square.File];
                 
                 if (piece.IsBishop)
-                    score += bishopScores[piece.Square.Rank, piece.Square.File];
+                    if (_botIsWhite == isWhite)
+                        score += bishopScores[piece.Square.Rank, piece.Square.File];
+                    else
+                        score += bishopScores[7 - piece.Square.Rank, piece.Square.File];
                 
                 if (piece.IsKnight)
-                    score += knightScores[piece.Square.Rank, piece.Square.File];
+                    if (_botIsWhite == isWhite)
+                        score += knightScores[piece.Square.Rank, piece.Square.File];
+                    else
+                        score += knightScores[7 - piece.Square.Rank, piece.Square.File];
                 
                 if (piece.IsRook)
-                    score += rookScores[piece.Square.Rank, piece.Square.File];
+                    if (_botIsWhite == isWhite)
+                        score += rookScores[piece.Square.Rank, piece.Square.File];
+                    else
+                        score += rookScores[7 - piece.Square.Rank, piece.Square.File];
                 
                 if (piece.IsQueen)
-                    score += queenScores[piece.Square.Rank, piece.Square.File];
+                    if (_botIsWhite == isWhite)
+                        score += queenScores[piece.Square.Rank, piece.Square.File];
+                    else
+                        score += queenScores[7 - piece.Square.Rank, piece.Square.File];
                 
                 if (piece.IsKing)
-                    score += kingScores[piece.Square.Rank, piece.Square.File];
-                
-                if (piece.IsKing && board.IsInCheck())
-                    score -= 100;
+                    if (_botIsWhite == isWhite)
+                        score += kingScores[piece.Square.Rank, piece.Square.File];
+                    else
+                        score += kingScores[7 - piece.Square.Rank, piece.Square.File];
                     
             }
         }
@@ -292,4 +323,127 @@ public partial class MyBot : IChessBot
     {
         return Min(board.PlyCount * 150 + 100, timer.MillisecondsRemaining / 20);
     }
+    
+    int Quiesce(Board board, int alpha, int beta)
+    {
+        Span<Move> captureMoves = stackalloc Move[MaxMoveCount];
+        board.GetLegalMovesNonAlloc(ref captureMoves, true);
+
+        if (captureMoves.Length < 1)
+        {
+            int stand_pat;
+            if (_transpositionTable.TryGetValue(board.ZobristKey, out var cache))
+            {
+                _cacheUsed++;
+                stand_pat = cache;
+            }
+            else
+            {
+                _movesEvaled++;
+                stand_pat = EvalBoard(board, _botIsWhite);
+                _transpositionTable[board.ZobristKey] = stand_pat;
+            }
+            
+            if (stand_pat >= beta)
+            {
+                _movesPruned++;
+                return beta;
+            }
+
+            if (alpha < stand_pat)
+                alpha = stand_pat;
+        }
+
+        OrderMoves(board, ref captureMoves);
+        foreach (Move move in captureMoves)
+        {
+            board.MakeMove(move);
+            int score = -Quiesce(board, -beta, -alpha);
+            board.UndoMove(move);
+
+            if (score >= beta)
+            {
+                _movesPruned++;
+                return beta;
+            }
+
+            if (score > alpha)
+                alpha = score;
+        }
+
+        return alpha;
+    }
+
+    // Scores for pawns, knights, bishops, rooks, queens, kings
+    sbyte[,] pawnScores =
+    {
+        { 0, 0, 0, 0, 0, 0, 0, 0 },
+        { 50, 50, 50, 50, 50, 50, 50, 50 },
+        { 10, 10, 20, 30, 30, 20, 10, 10 },
+        { 5, 5, 10, 25, 25, 10, 5, 5 },
+        { 0, 0, 0, 20, 20, 0, 0, 0 },
+        { 5, -5, -10, 0, 0, -10, -5, 5 },
+        { 5, 10, 10, -20, -20, 10, 10, 5 },
+        { 0, 0, 0, 0, 0, 0, 0, 0 }
+    };
+    
+    sbyte[,] knightScores =
+    {
+        { -50, -40, -30, -30, -30, -30, -40, -50 },
+        { -40, -20, 0, 0, 0, 0, -20, -40 },
+        { -30, 0, 10, 15, 15, 10, 0, -30 },
+        { -30, 5, 15, 20, 20, 15, 5, -30 },
+        { -30, 0, 15, 20, 20, 15, 0, -30 },
+        { -30, 5, 10, 15, 15, 10, 5, -30 },
+        { -40, -20, 0, 5, 5, 0, -20, -40 },
+        { -50, -40, -30, -30, -30, -30, -40, -50 }
+    };
+    
+    sbyte[,] bishopScores =
+    {
+        { -20, -10, -10, -10, -10, -10, -10, -20 },
+        { -10, 0, 0, 0, 0, 0, 0, -10 },
+        { -10, 0, 5, 10, 10, 5, 0, -10 },
+        { -10, 5, 5, 10, 10, 5, 5, -10 },
+        { -10, 0, 10, 10, 10, 10, 0, -10 },
+        { -10, 10, 10, 10, 10, 10, 10, -10 },
+        { -10, 5, 0, 0, 0, 0, 5, -10 },
+        { -20, -10, -10, -10, -10, -10, -10, -20 }
+    };
+    
+    sbyte[,] rookScores =
+    {
+        { 0, 0, 0, 0, 0, 0, 0, 0 },
+        { 5, 10, 10, 10, 10, 10, 10, 5 },
+        { -5, 0, 0, 0, 0, 0, 0, -5 },
+        { -5, 0, 0, 0, 0, 0, 0, -5 },
+        { -5, 0, 0, 0, 0, 0, 0, -5 },
+        { -5, 0, 0, 0, 0, 0, 0, -5 },
+        { -5, 0, 0, 0, 0, 0, 0, -5 },
+        { 0, 0, 0, 5, 5, 0, 0, 0 }
+    };
+    
+    sbyte[,] queenScores =
+    {
+        { -20, -10, -10, -5, -5, -10, -10, -20 },
+        { -10, 0, 0, 0, 0, 0, 0, -10 },
+        { -10, 0, 5, 5, 5, 5, 0, -10 },
+        { -5, 0, 5, 5, 5, 5, 0, -5 },
+        { 0, 0, 5, 5, 5, 5, 0, -5 },
+        { -10, 5, 5, 5, 5, 5, 0, -10 },
+        { -10, 0, 5, 0, 0, 0, 0, -10 },
+        { -20, -10, -10, -5, -5, -10, -10, -20 }
+    };
+    
+    sbyte[,] kingScores =
+    {
+        { -30, -40, -40, -50, -50, -40, -40, -30 },
+        { -30, -40, -40, -50, -50, -40, -40, -30 },
+        { -30, -40, -40, -50, -50, -40, -40, -30 },
+        { -30, -40, -40, -50, -50, -40, -40, -30 },
+        { -20, -30, -30, -40, -40, -30, -30, -20 },
+        { -10, -20, -20, -20, -20, -20, -20, -10 },
+        { 20, 20, 0, 0, 0, 0, 20, 20 },
+        { 20, 30, 10, 0, 0, 10, 30, 20 }
+    };
 }
