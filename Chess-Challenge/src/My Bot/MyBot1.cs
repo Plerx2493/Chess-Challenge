@@ -5,41 +5,36 @@ using System.Collections.Immutable;
 using System.ComponentModel.DataAnnotations;
 using System.Linq;
 using ChessChallenge.API;
-using ChessChallenge.Chess;
+
 using static System.Math;
-using Board = ChessChallenge.API.Board;
-using Move = ChessChallenge.API.Move;
 
 public class MyBot1 : IChessBot
 {
     int _movesEvaled, _movesPruned, _cacheUsed = 0;
     int _timeMs = 200 * 1;
-    public bool _botIsWhite;
+    bool _botIsWhite;
     int[] _moveScores = new int[MaxMoveCount];
     const int MaxMoveCount = 218;
     
     ConcurrentDictionary<ulong, int> _transpositionTable = new();
     bool useTT = true;
-    bool clearTT = true;
+    bool clearTT = false;
     bool useQSearch = false;
     readonly int _depth = 6;
     readonly int _squareControlledByOpponentPawnPenalty = 500;
     readonly int _capturedPieceValueMultiplier = 10;
     readonly int[] _pieceValues = new [] { 0, 100, 300, 320, 500, 900, 10000};
     
-    
-    
     Move lastMove = Move.NullMove;
-    
     (Move, int) _bestLastEval = (Move.NullMove, int.MinValue);
  
     public Move Think(Board board, Timer timer)
     {
-        //Console.WriteLine("Thinking... (Cache size: " + _transpositionTable.Count + ")..................");
+        //Console.WriteLine("Thinking... (Cache size: " + _transpositionTable.Count + ")...  (Current score: " + EvalBoard(board, _botIsWhite) + ")..................");
         _movesEvaled = 0;
         _movesPruned = 0;
         _cacheUsed = 0;
-        //_botIsWhite = board.IsWhiteToMove;
+        _botIsWhite = board.IsWhiteToMove;
         int depthReached = 0;
 
         _timeMs = GetTime(board, timer);
@@ -58,7 +53,7 @@ public class MyBot1 : IChessBot
         }
 
         //Console.WriteLine($"{_movesEvaled} Evaled and {_movesPruned} pruned");
-        Console.WriteLine($"Score: {bestEval.Item2}");
+        //Console.WriteLine($"Score: {bestEval.Item2}");
         //Console.WriteLine($"Cache used: {_cacheUsed}");
         //Console.WriteLine($"depth reached: {depthReached}");
         
@@ -168,17 +163,6 @@ public class MyBot1 : IChessBot
     int EvalBoard(Board board, bool isWhite)
     {
         int score = 0;
-        if (board.IsInCheckmate() || board.IsInsufficientMaterial() )
-        {
-            if(isWhite == _botIsWhite) 
-                return 999999;
-            else
-                return -999999;
-        }
-
-        if (board.FiftyMoveCounter >= 100) return 0;
-        
-        if(board.IsRepeatedPosition()) score -= 1000;
         score += EvalBoardOneSide(board, isWhite);
         score -= EvalBoardOneSide(board, !isWhite);
         return score;
@@ -194,14 +178,6 @@ public class MyBot1 : IChessBot
             foreach (var piece in pieceList)
             {
                 score += _pieceValues[(int)piece.PieceType];
-                
-                /*
-                if (board.SquareIsAttackedByOpponent(piece.Square))
-                    if (isWhite == _botIsWhite)
-                        score -= _squareControlledByOpponentPawnPenalty;
-                    else
-                        score += _squareControlledByOpponentPawnPenalty;
-                */
                 
                 if (piece.IsPawn)
                     if (_botIsWhite == isWhite)
@@ -288,7 +264,7 @@ public class MyBot1 : IChessBot
             
             // reduce score if square is attacked by opponent
             Span<Move> opponentMoves = stackalloc Move[MaxMoveCount];
-            board.GetLegalMovesNonAlloc(ref opponentMoves);
+            board.GetLegalMovesNonAlloc(ref opponentMoves, true);
             if (opponentMoves.Length < 1) score += 1000;
             
             foreach (var newMoves in opponentMoves)
@@ -323,7 +299,8 @@ public class MyBot1 : IChessBot
     // Basic time management
     public int GetTime(Board board, Timer timer)
     {
-        return Min(board.PlyCount * 150 + 100, timer.MillisecondsRemaining / 20);
+        return 200;
+        //return Min(board.PlyCount * 150 + 100, timer.MillisecondsRemaining / 20);
     }
     
     int Quiesce(Board board, int alpha, int beta)
@@ -448,17 +425,4 @@ public class MyBot1 : IChessBot
         { 20, 20, 0, 0, 0, 0, 20, 20 },
         { 20, 30, 10, 0, 0, 10, 30, 20 }
     };
-
-    public static void Main2()
-    {
-        MyBot1 test = new MyBot1();
-        test._botIsWhite = true;
-        Board board = Board.CreateBoardFromFEN(FenUtility.StartPositionFEN);
-        int whiteEval = test.EvalBoard(board, true);
-        
-        test._botIsWhite = false;
-        int blackEval = test.EvalBoard(board, false);
-        Console.WriteLine("White eval: " + whiteEval);
-        Console.WriteLine("Black eval: " + blackEval);
-    }
 }

@@ -29,6 +29,7 @@ public class StockfishBot : IChessBot
     // Basic time management
     public int GetTime(Board board, Timer timer)
     {
-        return Math.Min(board.PlyCount * 150 + 100, timer.MillisecondsRemaining / 20);
+        return 200;
+        //return Math.Min(board.PlyCount * 150 + 100, timer.MillisecondsRemaining / 20);
     }
 }
